@@ -191,13 +191,16 @@ async fn fetch_feed_xml(categories: &str) -> Result<String> {
 }
 
 /// First posting window starts at `WINDOW_START_HOUR` and each subsequent
-/// window opens `WINDOW_SPACING_HOURS` later, both in the arXiv timezone. With 6
-/// windows this yields slots at 06, 09, 12, 15, 18, 21 US/Eastern.
+/// window opens `WINDOW_SPACING_HOURS` later, both in the arXiv timezone. With 9
+/// windows this yields slots at 06, 08, 10, 12, 14, 16, 18, 20, 22 US/Eastern —
+/// a finer drip than 6 windows, so each run posts fewer links, while every slot
+/// still stays clear of the 00:00 US/Eastern feed refresh.
 ///
 /// INVARIANT: these MUST stay in sync with the cron schedule in
-/// `.github/workflows/post.yml` — one scheduled run per slot.
+/// `.github/workflows/post.yml` and the default `POST_WINDOWS` — one scheduled
+/// run per slot.
 const WINDOW_START_HOUR: i64 = 6;
-const WINDOW_SPACING_HOURS: i64 = 3;
+const WINDOW_SPACING_HOURS: i64 = 2;
 
 /// Which posting window `now` falls in, as an index in `[0, window_count-1]`.
 /// Derived from the *actual* wall-clock hour in `tz` (not from which cron
@@ -491,5 +494,11 @@ Abstract: Cross stuff.</description>
         assert_eq!(current_window_index(at("2025-07-01T03:00:00Z"), &tz, 6), 5); // 23 ET, clamps high
                                                                                  // single-batch mode always 0.
         assert_eq!(current_window_index(at("2025-06-30T13:00:00Z"), &tz, 1), 0);
+
+        // Production 9-window scheme (spacing 2h): each 2h ET slot is its own
+        // index, and the late slot stays clear of the 00:00 ET refresh.
+        assert_eq!(current_window_index(at("2025-06-30T15:00:00Z"), &tz, 9), 2); // 11 ET
+        assert_eq!(current_window_index(at("2025-07-01T03:00:00Z"), &tz, 9), 8);
+        // 23 ET → last
     }
 }

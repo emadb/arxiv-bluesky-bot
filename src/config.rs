@@ -93,7 +93,7 @@ impl Config {
             post_delay_ms: int_env("POST_DELAY_MS", 1500),
             dry_run: bool_env("DRY_RUN", false),
             time_zone,
-            post_windows: int_env("POST_WINDOWS", 6),
+            post_windows: int_env("POST_WINDOWS", 9),
         })
     }
 }

@@ -26,9 +26,11 @@ The bot keeps items whose announcement date equals **today in US/Eastern** and
 whose type is in the configured allow-list (default `new`), then posts them.
 
 Why this is exactly-once without state:
-- The GitHub job runs at **09:00 UTC**, a few hours after the 00:00 Eastern
-  refresh, so `today` (US/Eastern, computed at run time) equals the date
-  stamped on the fresh batch. One run per day ⇒ each batch posted once.
+- The GitHub jobs all run a few hours after the 00:00 Eastern refresh (earliest
+  at **11:00 UTC ≈ 06:00 ET**), so `today` (US/Eastern, computed at run time)
+  equals the date stamped on the fresh batch. Each batch is announced once and
+  each paper maps to exactly one window (see windowed posting below) ⇒ each
+  paper posted once.
 - Weekend/holiday runs match nothing (empty feed) ⇒ no-op, no error.
 - A stale feed left over on a holiday is dated a *previous* day, so it won't
   match `today` ⇒ no re-post.
@@ -37,14 +39,17 @@ Why this is exactly-once without state:
 - Do **not** change the cron times without re-checking the Eastern alignment.
   If a job runs *before* ~00:00 Eastern, `today` will be the *previous*
   batch's date and you'll either skip a day or (next day) re-post it.
-- **Windowed posting:** the batch is dripped out over **6 daily runs** rather
-  than one. Each run posts only the slice of the day's batch assigned to its
-  time-window (`selectWindow` hashes each id to exactly one of N windows;
-  `currentWindowIndex` picks the window from the live Eastern hour). Every paper
-  still posts exactly once — slicing is a second filter *on top of* the
-  `date == today` dedup, so the stateless invariant is unchanged. The six crons
-  in `post.yml` **must stay in sync** with `WINDOW_START_HOUR` (6) and
-  `WINDOW_SPACING_HOURS` (3) in `arxiv.rs` — one run per window. Set
+- **Windowed posting:** the batch is dripped out over **9 daily runs** rather
+  than one (more windows = fewer links per run, so followers' timelines aren't
+  flooded). Each run posts only the slice of the day's batch assigned to its
+  time-window (`select_window` hashes each id to exactly one of N windows;
+  `current_window_index` picks the window from the live Eastern hour). Every
+  paper still posts exactly once — slicing is a second filter *on top of* the
+  `date == today` dedup, so the stateless invariant is unchanged. The nine crons
+  in `post.yml` **must stay in sync** with `WINDOW_START_HOUR` (6),
+  `WINDOW_SPACING_HOURS` (2) in `arxiv.rs` and the default `POST_WINDOWS` (9) —
+  one run per window. To drip even finer, add crons + raise `POST_WINDOWS` and
+  keep the last slot before ~22:00 ET (clear of the 00:00 ET refresh). Set
   `POST_WINDOWS=1` to post a whole batch at once (the default for manual
   backfills).
 - Do **not** loosen the date filter to "today OR yesterday" or "latest batch
@@ -129,7 +134,7 @@ Required: `BSKY_HANDLE`, `BSKY_APP_PASSWORD`.
 Optional: `BSKY_SERVICE` (default `https://bsky.social`), `ARXIV_CATEGORIES`
 (`cs.AI`), `ARXIV_ANNOUNCE_TYPES` (`new`), `MAX_POSTS` (50), `POST_DELAY_MS`
 (1500), `ARXIV_TIMEZONE` (`America/New_York`), `TARGET_DATE` (default: today in
-tz), `DRY_RUN` (false), `POST_WINDOWS` (6; how many windows to split the daily
+tz), `DRY_RUN` (false), `POST_WINDOWS` (9; how many windows to split the daily
 batch across, `1` = whole batch in one run). Add new options in `config.rs`, not
 by reading `std::env` elsewhere.
 

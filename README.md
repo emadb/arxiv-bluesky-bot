@@ -15,10 +15,10 @@ arXiv's RSS feeds have two properties that make state unnecessary:
 
 So the bot simply fetches the feed and keeps the items whose announcement date
 equals **today** (in US/Eastern) and whose type is one you want (default:
-`new`). The GitHub job runs at 09:00 UTC — a few hours after the 00:00 Eastern
-refresh — so "today in Eastern" is exactly the date on the fresh batch. Run it
-once a day and each batch is posted exactly once; weekend/holiday runs match
-nothing and post nothing.
+`new`). The GitHub jobs run a few hours after the 00:00 Eastern refresh — so
+"today in Eastern" is exactly the date on the fresh batch. The day's batch is
+dripped across several runs (see "Posting volume" below) and each paper is
+posted exactly once; weekend/holiday runs match nothing and post nothing.
 
 > Note on wording: the batch announced on day *D* is made up of papers
 > **submitted the day before**, so "today's batch" and "yesterday's papers" are
@@ -44,8 +44,9 @@ nothing and post nothing.
    | `MAX_POSTS` | `50` | Hard cap per run (busy categories produce many papers/day) |
    | `POST_DELAY_MS` | `1500` | Pause between posts |
 
-5. Done. The workflow runs daily at 09:00 UTC. To test first, use
-   **Actions → Post arXiv to Bluesky → Run workflow** with **dry_run = true**.
+5. Done. The workflow runs on a schedule (nine times a day — see "Posting
+   volume" below). To test first, use **Actions → Post arXiv to Bluesky → Run
+   workflow** with **dry_run = true**.
 
 ## Run locally
 
@@ -70,9 +71,16 @@ a subject class (`cs.AI`), or several joined with `+`.
 
 ## Notes & limits
 
-- **Volume.** A single busy class (`cs.LG`, `cs.AI`) can be dozens to hundreds
-  of papers per weekday. `MAX_POSTS` caps a run; narrow the category or add a
-  keyword filter in `src/arxiv.rs` (`filter_papers`) if that's too much.
+- **Posting volume.** A single busy class (`cs.LG`, `cs.AI`) can be dozens to
+  hundreds of papers per weekday. To avoid flooding followers' timelines, the
+  day's batch is **dripped across 9 scheduled runs** (`POST_WINDOWS=9`): each
+  paper is hashed to exactly one window, so a run posts only ~1/9 of the batch
+  and every paper still posts once. Want fewer links per run? Raise
+  `POST_WINDOWS` and add matching crons in `post.yml` (keep the last slot before
+  ~22:00 ET). Want fewer papers *overall*? Narrow `ARXIV_CATEGORIES` or add a
+  keyword filter in `src/arxiv.rs` (`filter_papers`). `MAX_POSTS` also caps a
+  run, but it **drops** the overflow permanently (the bot keeps no state), so
+  prefer more windows or a keyword filter over a low cap.
 - **Post shape.** Text is an optional `📌` badge (shown when the paper already
   has a DOI / journal reference, i.e. a published version), the `title`,
   shortened authors, and a hashtag line — `#arXiv` plus one clickable tag per
