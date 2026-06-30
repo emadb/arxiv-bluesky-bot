@@ -1,0 +1,73 @@
+name: Post arXiv to Bluesky
+
+on:
+  schedule:
+    # Six runs/day spread the daily batch into smaller drips. arXiv rebuilds its
+    # RSS feeds at 00:00 US/Eastern; these all run well after that, on the same
+    # Eastern day, mapping to windows at 06/09/12/15/18/21 ET. The code derives
+    # the window from the actual Eastern hour (current_window_index in arxiv.rs),
+    # so these UTC times work across DST — each run still lands in its 3h slot.
+    #
+    # INVARIANT: keep these six crons in sync with WINDOW_START_HOUR (6) and
+    # WINDOW_SPACING_HOURS (3) in src/arxiv.rs — one run per window, no overlap.
+    # UTC = ET + 5 (EST); in EDT each run fires 1h later in ET, still in-slot.
+    - cron: "0 11 * * *" # 06:00 ET → window 1/6
+    - cron: "0 14 * * *" # 09:00 ET → window 2/6
+    - cron: "0 17 * * *" # 12:00 ET → window 3/6
+    - cron: "0 20 * * *" # 15:00 ET → window 4/6
+    - cron: "0 23 * * *" # 18:00 ET → window 5/6
+    - cron: "0 2 * * *" #  21:00 ET (previous ET day) → window 6/6
+
+  # Manual trigger, e.g. to backfill a specific day or to test safely.
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "Announcement date YYYY-MM-DD (US/Eastern). Empty = today."
+        required: false
+        default: ""
+      dry_run:
+        description: "Dry run — log posts but don't publish (true/false)."
+        required: false
+        default: "false"
+      post_windows:
+        description: "Windows to split the batch into. 1 = post everything (use for backfills)."
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arxiv-bluesky
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Post new papers
+        run: cargo run --release --quiet
+        env:
+          # --- required secrets ---
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+
+          # --- optional repo Variables (Settings → Secrets and variables →
+          #     Actions → Variables). Defaults apply if unset. ---
+          ARXIV_CATEGORIES: ${{ vars.ARXIV_CATEGORIES || 'cs.AI' }}
+          ARXIV_ANNOUNCE_TYPES: ${{ vars.ARXIV_ANNOUNCE_TYPES || 'new' }}
+          MAX_POSTS: ${{ vars.MAX_POSTS || '50' }}
+          POST_DELAY_MS: ${{ vars.POST_DELAY_MS || '1500' }}
+          # Scheduled runs split the batch into 6 windows; manual runs use the
+          # dispatch input (default 1 = post everything, for backfills).
+          POST_WINDOWS: ${{ github.event.inputs.post_windows || vars.POST_WINDOWS || '6' }}
+
+          # --- manual-run inputs (empty on scheduled runs) ---
+          TARGET_DATE: ${{ github.event.inputs.target_date }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}

@@ -1,0 +1,20 @@
+[package]
+name = "arxiv-bluesky-bot"
+version = "0.1.0"
+edition = "2021"
+description = "Posts each day's newly announced arXiv papers to a Bluesky account."
+license = "MIT"
+
+[[bin]]
+name = "arxiv-bluesky-bot"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+reqwest = "0.12"
+rss = "2"
+chrono = "0.4"
+chrono-tz = "0.10"
+unicode-segmentation = "1"
+anyhow = "1"
+bsky-sdk = "0.1.24"
