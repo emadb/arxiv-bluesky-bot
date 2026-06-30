@@ -3,7 +3,7 @@
 //! The network boundary (`fetch_feed_xml`) is split from the pure parse
 //! (`parse_feed`) so all behavior below the fetch is testable offline.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Tz;
 use rss::Channel;
@@ -123,10 +123,7 @@ fn creators(item: &rss::Item) -> String {
 }
 
 /// Parse a feed XML document into papers. Pure: no network, no clock.
-pub fn parse_feed(xml: &str, time_zone: &str) -> Result<Vec<ArxivPaper>> {
-    let tz: Tz = time_zone
-        .parse()
-        .map_err(|_| anyhow!("invalid timezone: {time_zone}"))?;
+pub fn parse_feed(xml: &str, tz: &Tz) -> Result<Vec<ArxivPaper>> {
     let channel = Channel::read_from(xml.as_bytes()).context("failed to parse RSS feed")?;
 
     Ok(channel
@@ -144,7 +141,7 @@ pub fn parse_feed(xml: &str, time_zone: &str) -> Result<Vec<ArxivPaper>> {
                 abstract_text: parse_abstract(item.description()),
                 link,
                 announce_type: announce_type(item),
-                announce_date: date_in_timezone(item.pub_date(), &tz),
+                announce_date: date_in_timezone(item.pub_date(), tz),
                 categories: item
                     .categories()
                     .iter()
@@ -157,9 +154,9 @@ pub fn parse_feed(xml: &str, time_zone: &str) -> Result<Vec<ArxivPaper>> {
 }
 
 /// Fetch the live feed (network boundary) and parse it.
-pub async fn fetch_papers(categories: &str, time_zone: &str) -> Result<Vec<ArxivPaper>> {
+pub async fn fetch_papers(categories: &str, tz: &Tz) -> Result<Vec<ArxivPaper>> {
     let xml = fetch_feed_xml(categories).await?;
-    parse_feed(&xml, time_zone)
+    parse_feed(&xml, tz)
 }
 
 async fn fetch_feed_xml(categories: &str) -> Result<String> {
@@ -227,7 +224,8 @@ pub fn select_window(papers: &[ArxivPaper], index: usize, window_count: u32) -> 
 }
 
 pub struct FilterOptions {
-    pub announce_types: Vec<String>,
+    /// Allowed announce types, already lowercased/canonical. Empty = any type.
+    pub announce_types: HashSet<String>,
     pub target_date: String,
 }
 
@@ -235,25 +233,20 @@ pub struct FilterOptions {
 /// announce type, de-duplicated by id (a paper can appear twice when several
 /// categories are combined with "+").
 pub fn filter_papers(papers: &[ArxivPaper], opts: &FilterOptions) -> Vec<ArxivPaper> {
-    let wanted: HashSet<String> = opts
-        .announce_types
-        .iter()
-        .map(|t| t.to_lowercase())
-        .collect();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut out = Vec::new();
 
     for p in papers {
         if p.announce_date != opts.target_date {
             continue;
         }
-        if !wanted.is_empty() && !wanted.contains(&p.announce_type) {
+        if !opts.announce_types.is_empty() && !opts.announce_types.contains(&p.announce_type) {
             continue;
         }
-        if seen.contains(&p.id) {
+        // `insert` returns false when the id was already present.
+        if !seen.insert(&p.id) {
             continue;
         }
-        seen.insert(p.id.clone());
         out.push(p.clone());
     }
     out
@@ -322,6 +315,61 @@ mod tests {
         );
     }
 
+    const SAMPLE_FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" version="2.0">
+  <channel>
+    <title>cs.AI updates on arXiv.org</title>
+    <link>https://arxiv.org/</link>
+    <description>cs.AI updates</description>
+    <item>
+      <title>A New Result
+        on Things</title>
+      <link>https://arxiv.org/abs/2506.01250</link>
+      <description>arXiv:2506.01250v1 Announce Type: new
+Abstract: We show   that things  are   true.</description>
+      <guid isPermaLink="false">oai:arXiv.org:2506.01250v1</guid>
+      <category>cs.AI</category>
+      <category>cs.LG</category>
+      <pubDate>Mon, 30 Jun 2025 04:00:00 +0000</pubDate>
+      <arxiv:announce_type>new</arxiv:announce_type>
+      <dc:creator>Ada Lovelace, Alan Turing</dc:creator>
+    </item>
+    <item>
+      <title>A Cross Listing</title>
+      <link>https://arxiv.org/abs/2506.09999</link>
+      <description>arXiv:2506.09999v2 Announce Type: cross
+Abstract: Cross stuff.</description>
+      <guid isPermaLink="false">oai:arXiv.org:2506.09999v2</guid>
+      <category>cs.AI</category>
+      <pubDate>Mon, 30 Jun 2025 04:00:00 +0000</pubDate>
+      <arxiv:announce_type>cross</arxiv:announce_type>
+      <dc:creator>Grace Hopper</dc:creator>
+    </item>
+  </channel>
+</rss>"#;
+
+    #[test]
+    fn parse_feed_extracts_all_fields() {
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let papers = parse_feed(SAMPLE_FEED, &tz).unwrap();
+        assert_eq!(papers.len(), 2);
+
+        let p = &papers[0];
+        assert_eq!(p.id, "2506.01250"); // guid segment, vN stripped
+        assert_eq!(p.title, "A New Result on Things"); // whitespace collapsed
+        assert_eq!(p.authors, "Ada Lovelace, Alan Turing"); // dc:creator
+        assert_eq!(p.abstract_text, "We show that things are true."); // after Abstract:
+        assert_eq!(p.link, "https://arxiv.org/abs/2506.01250");
+        assert_eq!(p.announce_type, "new"); // arxiv:announce_type extension
+                                            // 04:00 UTC = 00:00 US/Eastern (EDT) -> still 2025-06-30.
+        assert_eq!(p.announce_date, "2025-06-30");
+        assert_eq!(p.categories, vec!["cs.AI".to_string(), "cs.LG".to_string()]);
+
+        assert_eq!(papers[1].id, "2506.09999");
+        assert_eq!(papers[1].announce_type, "cross");
+        assert_eq!(papers[1].authors, "Grace Hopper");
+    }
+
     #[test]
     fn hash_id_matches_reference_implementation() {
         // Reference FNV-1a (UTF-16) values, mirroring the TypeScript hashId.
@@ -350,7 +398,7 @@ mod tests {
         let out = filter_papers(
             &papers,
             &FilterOptions {
-                announce_types: vec!["new".to_string()],
+                announce_types: HashSet::from(["new".to_string()]),
                 target_date: "2025-06-30".to_string(),
             },
         );
@@ -364,7 +412,7 @@ mod tests {
         let out = filter_papers(
             &papers,
             &FilterOptions {
-                announce_types: vec![],
+                announce_types: HashSet::new(),
                 target_date: "2025-06-30".to_string(),
             },
         );
