@@ -24,6 +24,11 @@ pub struct ArxivPaper {
     /// Announcement date as YYYY-MM-DD in the arXiv timezone.
     pub announce_date: String,
     pub categories: Vec<String>,
+    /// `arxiv:journal_reference`, present only when the paper has been published
+    /// in a venue (a "this is the peer-reviewed version" signal).
+    pub journal_reference: Option<String>,
+    /// `arxiv:DOI`, present once a DOI has been registered.
+    pub doi: Option<String>,
 }
 
 /// Collapse all runs of whitespace to single spaces and trim (mirrors the
@@ -87,17 +92,25 @@ fn date_in_timezone(raw: Option<&str>, tz: &Tz) -> String {
     }
 }
 
-/// Read the custom `<arxiv:announce_type>` element from the item's namespaced
-/// extension map (parsed from the dedicated element, not the description blob).
-fn announce_type(item: &rss::Item) -> String {
+/// Read a named element from the `arxiv:` namespace extension map, trimmed.
+/// Returns `None` when absent or blank.
+fn arxiv_field(item: &rss::Item, name: &str) -> Option<String> {
     item.extensions()
         .get("arxiv")
-        .and_then(|m| m.get("announce_type"))
+        .and_then(|m| m.get(name))
         .and_then(|v| v.first())
         .and_then(|e| e.value())
-        .unwrap_or("")
-        .trim()
-        .to_lowercase()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Read the custom `<arxiv:announce_type>` element (parsed from the dedicated
+/// element, not the description blob), lowercased.
+fn announce_type(item: &rss::Item) -> String {
+    arxiv_field(item, "announce_type")
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default()
 }
 
 /// `dc:creator` — a single comma-separated author string. Read from the Dublin
@@ -147,6 +160,8 @@ pub fn parse_feed(xml: &str, tz: &Tz) -> Result<Vec<ArxivPaper>> {
                     .iter()
                     .map(|c| c.name().to_string())
                     .collect(),
+                journal_reference: arxiv_field(item, "journal_reference"),
+                doi: arxiv_field(item, "DOI"),
                 id,
             }
         })
@@ -266,6 +281,8 @@ mod tests {
             announce_type: ty.to_string(),
             announce_date: date.to_string(),
             categories: vec!["cs.AI".to_string()],
+            journal_reference: None,
+            doi: None,
         }
     }
 
@@ -332,6 +349,8 @@ Abstract: We show   that things  are   true.</description>
       <category>cs.LG</category>
       <pubDate>Mon, 30 Jun 2025 04:00:00 +0000</pubDate>
       <arxiv:announce_type>new</arxiv:announce_type>
+      <arxiv:DOI>10.1234/example.2025.42</arxiv:DOI>
+      <arxiv:journal_reference>J. Important Results, 2025, 12(3): 1-9</arxiv:journal_reference>
       <dc:creator>Ada Lovelace, Alan Turing</dc:creator>
     </item>
     <item>
@@ -364,10 +383,18 @@ Abstract: Cross stuff.</description>
                                             // 04:00 UTC = 00:00 US/Eastern (EDT) -> still 2025-06-30.
         assert_eq!(p.announce_date, "2025-06-30");
         assert_eq!(p.categories, vec!["cs.AI".to_string(), "cs.LG".to_string()]);
+        assert_eq!(p.doi.as_deref(), Some("10.1234/example.2025.42"));
+        assert_eq!(
+            p.journal_reference.as_deref(),
+            Some("J. Important Results, 2025, 12(3): 1-9")
+        );
 
         assert_eq!(papers[1].id, "2506.09999");
         assert_eq!(papers[1].announce_type, "cross");
         assert_eq!(papers[1].authors, "Grace Hopper");
+        // The second item carries neither a DOI nor a journal reference.
+        assert!(papers[1].doi.is_none());
+        assert!(papers[1].journal_reference.is_none());
     }
 
     #[test]

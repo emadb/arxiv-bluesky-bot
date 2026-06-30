@@ -75,6 +75,7 @@ assumed):
 | `<description>` | `item.description()` | blob: `arXiv:<id>vN Announce Type: <type>\nAbstract: <text>` |
 | `<category>` (repeated) | `item.categories()` | slice of `Category` |
 | `<arxiv:announce_type>` | `item.extensions()["arxiv"]["announce_type"]` | **custom namespace element**, read from the extension map |
+| `<arxiv:journal_reference>` / `<arxiv:DOI>` | `item.extensions()["arxiv"][..]` | optional; present once a published version exists → drives the `📌` badge |
 
 `announce_type` is parsed from the dedicated element, **not** from the
 description blob. The abstract is sliced out of `item.description()` after the
@@ -86,7 +87,7 @@ literal `Abstract:` marker.
 src/
   config.rs    Config::from_env() → typed Config. The ONLY source of configuration.
   arxiv.rs     fetch_papers() = fetch_feed_xml() (network) + parse_feed() (pure) → Vec<ArxivPaper>; filter_papers() → date + type + dedup; current_window_index()/select_window() → drip one batch across N daily windows.
-  format.rs    compose_post() → ComposedPost { text, embed: ExternalEmbed } within Bluesky's 300-grapheme limit.
+  format.rs    compose_post() → ComposedPost { text, facets, embed: ExternalEmbed } within Bluesky's 300-grapheme limit. Text = [📌 badge] + title + authors + hashtag line (#arXiv + cross-list categories); facets make the hashtags clickable.
   bluesky.rs   BlueskyClient::login() via bsky-sdk (atrium), returns a thin .post() wrapper.
   main.rs      #[tokio::main] async main(): load config → fetch → filter → window-slice → (dry-run log | login + post loop).
 .github/workflows/post.yml   Daily cron + manual workflow_dispatch (target_date, dry_run).
@@ -160,9 +161,11 @@ placeholder works since dry-run never logs in.)
 - **Card thumbnail:** upload a blob via the agent in `bluesky.rs` and set the
   external embed's `thumb` (carry it through `ExternalEmbed` in `format.rs`).
 - **Include cross-lists:** add `cross` to `ARXIV_ANNOUNCE_TYPES` (no code change).
-- **Rich text in post body (hashtags, in-text link):** build `facets` on the
-  `RecordData` in `bluesky.rs` (atrium's `RichText`/facet detection) before
-  posting; re-check the grapheme budget afterward.
+- **Rich text in post body:** hashtag (`#tag`) facets are already wired —
+  `compose_post` emits `TagFacet`s (UTF-8 byte ranges) and `bluesky.rs` maps
+  them to `app.bsky.richtext.facet#tag`. Add link/mention features the same way
+  (extend `TagFacet`/`tag_facet`); keep facet byte offsets in sync with the
+  final `text` and re-check the grapheme budget afterward.
 
 ## Things NOT to do
 

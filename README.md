@@ -73,9 +73,12 @@ a subject class (`cs.AI`), or several joined with `+`.
 - **Volume.** A single busy class (`cs.LG`, `cs.AI`) can be dozens to hundreds
   of papers per weekday. `MAX_POSTS` caps a run; narrow the category or add a
   keyword filter in `src/arxiv.rs` (`filter_papers`) if that's too much.
-- **Post shape.** Text is `title` + shortened authors; the clickable link,
-  title and abstract ride in a Bluesky link card. The 300-grapheme post limit
-  is enforced by truncation in `src/format.rs`.
+- **Post shape.** Text is an optional `📌` badge (shown when the paper already
+  has a DOI / journal reference, i.e. a published version), the `title`,
+  shortened authors, and a hashtag line — `#arXiv` plus one clickable tag per
+  category (which doubles as the paper's cross-list). The link, title and
+  abstract ride in a Bluesky link card. The 300-grapheme post limit is enforced
+  by truncation in `src/format.rs`.
 - **No thumbnail** is attached to the card (keeps it simple). You can add one by
   uploading a blob via the agent and setting the external embed's `thumb`.
 - The bot exits non-zero if any individual post fails, so failures show up red

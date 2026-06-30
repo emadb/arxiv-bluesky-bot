@@ -43,6 +43,31 @@ fn shorten_authors(authors: &str) -> String {
     }
 }
 
+/// A paper is treated as "published" once it carries a DOI or a journal
+/// reference — i.e. a peer-reviewed version exists. Surfaced as a badge.
+fn is_published(paper: &ArxivPaper) -> bool {
+    paper.doi.is_some() || paper.journal_reference.is_some()
+}
+
+/// Build the trailing hashtag line (`#arXiv` plus one tag per category, which
+/// doubles as the paper's cross-list) together with the byte spans each tag
+/// occupies *within the line*, so callers can turn them into rich-text facets.
+fn build_tags(categories: &[String]) -> (String, Vec<(usize, usize, String)>) {
+    let tags = std::iter::once("arXiv".to_string()).chain(categories.iter().cloned());
+    let mut line = String::new();
+    let mut spans = Vec::new();
+    for (i, tag) in tags.enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        let start = line.len();
+        line.push('#');
+        line.push_str(&tag);
+        spans.push((start, line.len(), tag));
+    }
+    (line, spans)
+}
+
 /// External embed card fields, kept independent of the AT Protocol types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalEmbed {
@@ -51,18 +76,41 @@ pub struct ExternalEmbed {
     pub description: String,
 }
 
+/// A clickable hashtag, as a UTF-8 byte range over [`ComposedPost::text`] plus
+/// the tag value (without the leading `#`). Independent of the AT Protocol
+/// types; turned into a `app.bsky.richtext.facet#tag` in `bluesky.rs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagFacet {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub tag: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposedPost {
     pub text: String,
+    pub facets: Vec<TagFacet>,
     pub embed: ExternalEmbed,
 }
 
 /// The clickable link lives in the external embed "card", so the post text
-/// itself stays short: title + authors, trimmed to fit 300 graphemes.
+/// itself stays short: an optional 📌 "published" badge, the title, the
+/// shortened authors, and a hashtag line (`#arXiv` + the cross-list). The
+/// title absorbs whatever budget the other parts leave, keeping the whole post
+/// within 300 graphemes.
 pub fn compose_post(paper: &ArxivPaper) -> ComposedPost {
+    let badge = if is_published(paper) { "📌 " } else { "" };
     let authors_line = shorten_authors(&paper.authors);
-    let separator = if authors_line.is_empty() { "" } else { "\n\n" };
-    let reserved = grapheme_count(separator) + grapheme_count(&authors_line);
+    let (tag_line, tag_spans) = build_tags(&paper.categories);
+
+    let block = |s: &str| grapheme_count("\n\n") + grapheme_count(s);
+    let reserved = grapheme_count(badge)
+        + if authors_line.is_empty() {
+            0
+        } else {
+            block(&authors_line)
+        }
+        + block(&tag_line);
     let title_budget = MAX_GRAPHEMES.saturating_sub(reserved).max(20);
 
     let title_source = if paper.title.is_empty() {
@@ -71,7 +119,24 @@ pub fn compose_post(paper: &ArxivPaper) -> ComposedPost {
         paper.title.as_str()
     };
     let title = truncate_graphemes(title_source, title_budget);
-    let text = format!("{title}{separator}{authors_line}");
+
+    let mut text = format!("{badge}{title}");
+    if !authors_line.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&authors_line);
+    }
+    text.push_str("\n\n");
+    // The tag line starts here; facet byte offsets are absolute into `text`.
+    let tag_base = text.len();
+    text.push_str(&tag_line);
+    let facets = tag_spans
+        .into_iter()
+        .map(|(start, end, tag)| TagFacet {
+            byte_start: tag_base + start,
+            byte_end: tag_base + end,
+            tag,
+        })
+        .collect();
 
     let card_title = if paper.title.is_empty() {
         format!("arXiv:{}", paper.id)
@@ -86,6 +151,7 @@ pub fn compose_post(paper: &ArxivPaper) -> ComposedPost {
 
     ComposedPost {
         text,
+        facets,
         embed: ExternalEmbed {
             uri: paper.link.clone(),
             title: truncate_graphemes(&card_title, MAX_GRAPHEMES),
@@ -107,7 +173,9 @@ mod tests {
             link: "https://arxiv.org/abs/2506.01250".to_string(),
             announce_type: "new".to_string(),
             announce_date: "2025-06-30".to_string(),
-            categories: vec![],
+            categories: vec!["cs.AI".to_string(), "cs.LG".to_string()],
+            journal_reference: None,
+            doi: None,
         }
     }
 
@@ -141,7 +209,9 @@ mod tests {
         let long_title = "word ".repeat(200);
         let post = compose_post(&paper_with(long_title.trim(), "Alice, Bob, Carol, Dave"));
         assert!(grapheme_count(&post.text) <= MAX_GRAPHEMES);
-        assert!(post.text.ends_with("Alice et al."));
+        assert!(post.text.contains("Alice et al."));
+        // The hashtag line is the last thing in the post.
+        assert!(post.text.ends_with("#arXiv #cs.AI #cs.LG"));
         assert_eq!(post.embed.uri, "https://arxiv.org/abs/2506.01250");
     }
 
@@ -150,8 +220,52 @@ mod tests {
         let mut p = paper_with("", "");
         p.abstract_text = String::new();
         let post = compose_post(&p);
-        assert_eq!(post.text, "2506.01250");
+        assert_eq!(post.text, "2506.01250\n\n#arXiv #cs.AI #cs.LG");
         assert_eq!(post.embed.title, "arXiv:2506.01250");
         assert_eq!(post.embed.description, "arXiv:2506.01250");
+    }
+
+    #[test]
+    fn hashtag_facets_cover_the_right_bytes() {
+        let post = compose_post(&paper_with("A Title", "Alice"));
+        // #arXiv plus one tag per category.
+        let tags: Vec<&str> = post.facets.iter().map(|f| f.tag.as_str()).collect();
+        assert_eq!(tags, vec!["arXiv", "cs.AI", "cs.LG"]);
+        // Each facet's byte range slices out exactly "#<tag>" from the text.
+        for f in &post.facets {
+            assert_eq!(&post.text[f.byte_start..f.byte_end], format!("#{}", f.tag));
+        }
+    }
+
+    #[test]
+    fn published_paper_gets_a_badge() {
+        let mut p = paper_with("A Title", "Alice");
+        p.doi = Some("10.1/x".to_string());
+        let post = compose_post(&p);
+        assert!(post.text.starts_with("📌 A Title"));
+
+        // A journal reference alone is enough, too.
+        let mut p2 = paper_with("A Title", "Alice");
+        p2.journal_reference = Some("J. Foo 2025".to_string());
+        assert!(compose_post(&p2).text.starts_with("📌 "));
+    }
+
+    #[test]
+    fn unpublished_paper_has_no_badge() {
+        let post = compose_post(&paper_with("A Title", "Alice"));
+        assert!(post.text.starts_with("A Title"));
+        assert!(!post.text.contains('📌'));
+    }
+
+    #[test]
+    fn badge_offset_keeps_facets_valid() {
+        // With the 📌 prefix (a 4-byte emoji) the tag line shifts; facet byte
+        // offsets must still land on the hashtags.
+        let mut p = paper_with("A Title", "Alice");
+        p.doi = Some("10.1/x".to_string());
+        let post = compose_post(&p);
+        for f in &post.facets {
+            assert_eq!(&post.text[f.byte_start..f.byte_end], format!("#{}", f.tag));
+        }
     }
 }

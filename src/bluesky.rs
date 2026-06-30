@@ -5,11 +5,12 @@ use anyhow::{Context, Result};
 use bsky_sdk::agent::config::Config as AgentConfig;
 use bsky_sdk::api::app::bsky::embed::external::{ExternalData, MainData};
 use bsky_sdk::api::app::bsky::feed::post::{RecordData, RecordEmbedRefs};
+use bsky_sdk::api::app::bsky::richtext::facet;
 use bsky_sdk::api::types::string::Datetime;
 use bsky_sdk::api::types::Union;
 use bsky_sdk::BskyAgent;
 
-use crate::format::ComposedPost;
+use crate::format::{ComposedPost, TagFacet};
 
 pub struct BlueskyClient {
     agent: BskyAgent,
@@ -47,11 +48,13 @@ impl BlueskyClient {
             main.into(),
         )));
 
+        let facets: Vec<facet::Main> = post.facets.iter().map(tag_facet).collect();
+
         let record = RecordData {
             created_at: Datetime::now(),
             embed: Some(embed),
             entities: None,
-            facets: None,
+            facets: (!facets.is_empty()).then_some(facets),
             labels: None,
             langs: None,
             reply: None,
@@ -66,4 +69,21 @@ impl BlueskyClient {
             .context("failed to create Bluesky post")?;
         Ok(output.uri.clone())
     }
+}
+
+/// Turn a [`TagFacet`] into an `app.bsky.richtext.facet` with a single `#tag`
+/// feature over its UTF-8 byte range.
+fn tag_facet(f: &TagFacet) -> facet::Main {
+    let tag = facet::TagData { tag: f.tag.clone() };
+    facet::MainData {
+        index: facet::ByteSliceData {
+            byte_start: f.byte_start,
+            byte_end: f.byte_end,
+        }
+        .into(),
+        features: vec![Union::Refs(facet::MainFeaturesItem::Tag(Box::new(
+            tag.into(),
+        )))],
+    }
+    .into()
 }
